@@ -9,12 +9,21 @@
 #include <DistanceGP2Y0A21YK.h>
 // for SerLCD
 #include <SoftwareSerial.h>
+// for Servo
+#include <Servo.h>
 
 const int analogInLeft = A2; // (driver's) left GP2Y0A21YK IR Measuring Sensor
 const int analogInRight = A0; // (driver's) right GP2Y0A21YK IR Measuring Sensor
 
+const int steeringServoPin = 2; // data pin
+
 // serLCD on pin 11
 SoftwareSerial lcdSerial(10, 11); // RX, TX - RX w/b unused
+
+// servo object and position
+Servo steeringServo;
+int steeringPos = 0;
+int steeringTrim = -10; // true center offset from 90d
 
 // create GP2Y0A21YK sensor objects
 DistanceGP2Y0A21YK DistLeft;
@@ -31,6 +40,10 @@ void setup() {
   // initialize GP2Y0A21YK sensors with the appropriate pins
   DistLeft.begin(analogInLeft);
   DistRight.begin(analogInRight);
+  
+  // attach and center servo
+  steeringServo.attach(steeringServoPin);
+  steeringServo.write(steeringPos + steeringTrim);
   
   // initialize serLCD at 9600 bps
   lcdSerial.begin(9600);
@@ -53,6 +66,24 @@ void loop() {
   // get and print distance measurements (cm)
   cmLeft = DistLeft.getDistanceCentimeter();
   cmRight = DistRight.getDistanceCentimeter();
+  
+  
+  // initial guess at steering logic (just try to avoid walls)
+  if (cmLeft < 10) {
+    steeringPos = 80;
+  } else if (cmRight < 10) {
+    steeringPos = 100;    
+  } else if (cmLeft < 20) {
+    // less severe angle when further away
+    steeringPos = 86;
+  } else if (cmRight < 20) {
+    steeringPos = 94; 
+  } else {
+    // straight
+    steeringPos = 90; 
+  }
+  steeringServo.write(steeringPos + steeringTrim);
+  
 
   // SerLCD
   sprintf(stringLeft,"%4d",cmLeft);
@@ -79,5 +110,6 @@ void loop() {
   Serial.println("]");
   
   // wait before next reading
-  delay(500);
+  //delay(500);
+  delay(25);
 }
