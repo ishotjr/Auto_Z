@@ -77,19 +77,26 @@ void loop() {
   cmRight = DistRight.getDistanceCentimeter();
   
   
-  // initial guess at steering logic (just try to avoid walls)
-  if (cmLeft < 10) {
-    steeringPos = steeringCenter - steeringMaxLeft;
-  } else if (cmRight < 10) {
-    steeringPos = steeringCenter + steeringMaxRight;    
-  } else if (cmLeft < 20) {
-    // less severe angle when further away
-    steeringPos = steeringCenter - (steeringMaxLeft / 2);
-  } else if (cmRight < 20) {
-    steeringPos = steeringCenter + (steeringMaxRight / 2); 
-  } else {
-    // straight
-    steeringPos = 90; 
+  // default to straight
+  steeringPos = 90; 
+
+  // favor handling closest wall
+  if (cmLeft < cmRight) {
+    if (cmLeft < 10) {
+      steeringPos = steeringCenter - steeringMaxLeft;
+    } else if (cmLeft < 20) {
+      // less severe angle when further away
+      steeringPos = steeringCenter - (steeringMaxLeft / 2);
+    }
+    // otherwise, retain default straight
+  } 
+  else {
+    if (cmRight < 10) {
+      steeringPos = steeringCenter + steeringMaxRight;    
+    } else if (cmRight < 20) {
+      steeringPos = steeringCenter + (steeringMaxRight / 2); 
+    }
+    // otherwise, retain default straight
   }
   // apply trim to theoretical value before write
   steeringServo.write(steeringPos + steeringTrim);
