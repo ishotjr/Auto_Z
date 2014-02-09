@@ -1,7 +1,10 @@
 /*
  * Auto_Z - A simple autonomous Mini-Z using Arduino.
  *
- * Currently measures left/right distance (cm) and outputs to serial/LCD.
+ * Currently measures left/right distance (cm) and  sets servo position 
+ * accordingly.  Drives motor at constant speed via external 4xAAA power.
+ * Outputs measurements to serial/LCD*.
+ * *LCD temporarily removed due to potential current limits
  *
  */
 
@@ -35,6 +38,14 @@ DistanceGP2Y0A21YK DistRight;
 int cmLeft;
 int cmRight;
 
+// L293D pins
+int en1Pin = 11; // L293D Pin 1 (speed)
+int in1Pin = 10; // L293D Pin 2 (must be opposite of in2)
+int in2Pin = 9;  // L293D Pin 7 (must be opposite of in1)
+// constant speed (simulating analog read value)
+int throttle = 1023 * (0.30); // 30% throttle
+boolean reverse = true; // motor is reversed
+
 
 void setup() {
   // attach and center servo
@@ -52,6 +63,12 @@ void setup() {
   // initialize GP2Y0A21YK sensors with the appropriate pins
   DistLeft.begin(analogInLeft);
   DistRight.begin(analogInRight);  
+  
+  
+  // set up motor pins
+  pinMode(en1Pin, OUTPUT);
+  pinMode(in1Pin, OUTPUT);
+  pinMode(in2Pin, OUTPUT);
   
   
 //  // initialize serLCD at 9600 bps
@@ -100,6 +117,12 @@ void loop() {
   }
   // apply trim to theoretical value before write
   steeringServo.write(steeringPos + steeringTrim);
+  
+  // drive motor
+  int speed = throttle / 4;
+  analogWrite(en1Pin, speed);
+  digitalWrite(in1Pin, !reverse);
+  digitalWrite(in2Pin, reverse);
   
 //  
 //  // SerLCD
