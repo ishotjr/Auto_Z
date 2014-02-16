@@ -1,94 +1,84 @@
 /*
  * Auto_Z - A simple autonomous Mini-Z using Arduino.
  *
- * Currently measures left/right distance (cm) and  sets servo position 
- * accordingly.  Drives motor at constant speed via external 4xAAA power.
+ * -----------------------------------------------------------------------------
+ *
+ * Currently measures left/right distance (cm) and sets servo position 
+ * and motor speed accordingly.  Motor and Arduino driven via external 4xAAA 
+ * power.
  * Outputs measurements to serial/LCD*.
  * *LCD temporarily removed due to potential current limits
  *
+ * -----------------------------------------------------------------------------
+ *
  */
 
+#include <SoftwareSerial.h>       // for SerLCD
+#include <Servo.h>                // for Servo
 // from https://github.com/jeroendoggen/Arduino-distance-sensor-library 
-#include <DistanceGP2Y0A21YK.h>
-//// for SerLCD
-//#include <SoftwareSerial.h>
-// for Servo
-#include <Servo.h>
+#include <DistanceGP2Y0A21YK.h>   // for (L/R) GP2Y0A21YKs
 
-const int analogInLeft = A2; // (driver's) left GP2Y0A21YK IR Measuring Sensor
-const int analogInRight = A0; // (driver's) right GP2Y0A21YK IR Measuring Sensor
+// pin setup
+const int steeringServoPin = 2;   // servo data pin
+const int analogInLeft = A2;      // (driver's) left GP2Y0A21YK IR Measuring Sensor
+const int analogInRight = A0;     // (driver's) right GP2Y0A21YK IR Measuring Sensor
+const int en1Pin = 11;            // L293D Pin 1 (speed)
+const int in1Pin = 10;            // L293D Pin 2 (value must be opposite of in2)
+const int in2Pin = 9;             // L293D Pin 7 (value must be opposite of in1)
 
-const int steeringServoPin = 2; // data pin
 
-//// serLCD on pin 11
-//SoftwareSerial lcdSerial(10, 11); // RX, TX - RX w/b unused
+// serLCD on pin 11
+SoftwareSerial lcdSerial(10, 11); // RX, TX (RX w/b unused)
+char stringLeft[10], stringRight[10];
+
 
 // servo object and position (degrees)
 Servo steeringServo;
-int steeringPos = 0; // current servo position
-int steeringCenter = 90; // theoretical center position (degrees)
-int steeringTrim = 0; // true center offset from 90d (degrees)
-int steeringMaxLeft = 14; // maximum range from 90d center (degrees)
-int steeringMaxRight = 14; // maximum range from 90d center (degrees)
+int steeringPos = 0;              // current servo position
+const int steeringCenter = 90;    // theoretical center position (degrees)
+const int steeringTrim = 0;       // true center offset from 90d (degrees)
+const int steeringMaxLeft = 28;   // maximum range from 90d center (degrees)
+const int steeringMaxRight = 28;  // maximum range from 90d center (degrees)
 
-// create GP2Y0A21YK sensor objects
+
+// GP2Y0A21YK sensor objects
 DistanceGP2Y0A21YK DistLeft;
 DistanceGP2Y0A21YK DistRight;
 
+// distance measurements
 int cmLeft;
 int cmRight;
+const int evasionDistanceCmLeft = 12;     // take extreme action to correct course
+const int correctionDistanceCmLeft = 21;  // take mild action to correct course
+const int evasionDistanceCmRight = 15;    // note: left > right based on 
+const int correctionDistanceCmRight = 32; // measured avgs
+                                          // *10cm being GP2Y0A21YK's min. range
 
-// L293D pins
-int en1Pin = 11; // L293D Pin 1 (speed)
-int in1Pin = 10; // L293D Pin 2 (must be opposite of in2)
-int in2Pin = 9;  // L293D Pin 7 (must be opposite of in1)
-// constant speed (simulating analog read value)
-int throttle = 1023 * (0.30); // 30% throttle
-boolean reverse = true; // motor is reversed
+
+int throttle = 0;                         // current speed (analog 0-1023)
+boolean reverse = true;                   // motor is reversed
+const int throttleMax = 1023 * (0.45);    // top speed (1023 * % throttle)
+const int throttleMid = 1023 * (0.42);    // mid speed
+const int throttleMin = 1023 * (0.38);    // min speed
 
 
 void setup() {
-  // attach and center servo
-  steeringServo.attach(steeringServoPin);
-  
-  // start centered (+trim) due to physically limited range
-  steeringPos = steeringCenter;
-  steeringServo.write(steeringPos + steeringTrim);
 
-
-  // initialize (USB/Monitor) serial at 9600 bps
+  // initialize (USB) Serial Monitor at 9600 bps
   Serial.begin(9600);
+  
+  initServo();
+  initIRSensors(); 
+  initMotor();
+  //initSerLCD();
+  
+  // wait 5 seconds so we're not driving off immediately
+  delay(5000);  
 
-
-  // initialize GP2Y0A21YK sensors with the appropriate pins
-  DistLeft.begin(analogInLeft);
-  DistRight.begin(analogInRight);  
-  
-  
-  // set up motor pins
-  pinMode(en1Pin, OUTPUT);
-  pinMode(in1Pin, OUTPUT);
-  pinMode(in2Pin, OUTPUT);
-  
-  
-//  // initialize serLCD at 9600 bps
-//  lcdSerial.begin(9600);
-//  // wait 500ms for splash screen
-//  delay(500);
-  
-//  // move cursor to beginning of first line
-//  lcdSerial.write(254);
-//  lcdSerial.write(128);
-
-//  // clear display
-//  lcdSerial.write("L:              ");
-//  lcdSerial.write("R:              ");  
 }
 
-
-char stringLeft[10], stringRight[10];
-
 void loop() {
+  
   // get and print distance measurements (cm)
   cmLeft = DistLeft.getDistanceCentimeter();
   cmRight = DistRight.getDistanceCentimeter();
@@ -96,51 +86,104 @@ void loop() {
   
   // default to straight
   steeringPos = 90; 
+  // default throttle for straight
+  throttle = throttleMax; 
 
   // favor handling closest wall
   if (cmLeft < cmRight) {
-    if (cmLeft < 10) {
-      steeringPos = steeringCenter - steeringMaxLeft;
-    } else if (cmLeft < 20) {
+    if (cmLeft < evasionDistanceCmLeft) {
+      // too close to left - aim right
+      steeringPos = steeringCenter - steeringMaxRight;
+      throttle = throttleMin; // slowest
+    } else if (cmLeft < correctionDistanceCmLeft) {
       // less severe angle when further away
-      steeringPos = steeringCenter - (steeringMaxLeft / 2);
+      steeringPos = steeringCenter - (steeringMaxRight / 2);
+      throttle = throttleMid; // less slow
     }
     // otherwise, retain default straight
   } 
   else {
-    if (cmRight < 10) {
-      steeringPos = steeringCenter + steeringMaxRight;    
-    } else if (cmRight < 20) {
-      steeringPos = steeringCenter + (steeringMaxRight / 2); 
+    if (cmRight < evasionDistanceCmRight) {
+      // too close to right - aim left
+      steeringPos = steeringCenter + steeringMaxLeft;    
+      throttle = throttleMin; // slowest
+    } else if (cmRight < correctionDistanceCmRight) {
+      steeringPos = steeringCenter + (steeringMaxLeft / 2); 
+      throttle = throttleMid; // less slow
     }
     // otherwise, retain default straight
   }
+  
   // apply trim to theoretical value before write
   steeringServo.write(steeringPos + steeringTrim);
+  updateMotor();
   
-  // drive motor
-  int speed = throttle / 4;
-  analogWrite(en1Pin, speed);
-  digitalWrite(in1Pin, !reverse);
-  digitalWrite(in2Pin, reverse);
+  //updateSerLCD();
+  updateSerialMonitor();  
   
-//  
-//  // SerLCD
-//  sprintf(stringLeft,"%4d",cmLeft);
-//  sprintf(stringRight,"%4d",cmRight);
-//
-//  lcdSerial.write(254); 
-//  // 7th position on first line
-//  lcdSerial.write(134);
-//  lcdSerial.write(stringLeft);
-//
-//  lcdSerial.write(254); 
-//  // 7th position on second line
-//  lcdSerial.write(198);
-//  lcdSerial.write(stringRight);
-//    
+  // wait before next reading
+  delay(25); // min. ~15 for servo to keep up?
   
-  // USB/Monitor
+}
+
+
+void initSerLCD() {  
+  // initialize serLCD at 9600 bps
+  lcdSerial.begin(9600);
+  // wait 500ms for splash screen
+  delay(500);
+  
+  // move cursor to beginning of first line
+  lcdSerial.write(254);
+  lcdSerial.write(128);
+
+  // clear display
+  lcdSerial.write("L:              ");
+  lcdSerial.write("R:              ");  
+}
+
+void initServo() {
+  // attach and center servo
+  steeringServo.attach(steeringServoPin);
+  
+  // start centered (+trim) due to physically limited range
+  steeringPos = steeringCenter;
+  steeringServo.write(steeringPos + steeringTrim);
+}
+
+void initIRSensors() {
+  // initialize GP2Y0A21YK sensors with the appropriate pins
+  DistLeft.begin(analogInLeft);
+  DistRight.begin(analogInRight); 
+}
+
+void initMotor() {
+  // set up motor pins
+  pinMode(en1Pin, OUTPUT);
+  pinMode(in1Pin, OUTPUT);
+  pinMode(in2Pin, OUTPUT);
+  
+  // set initial speed
+  updateMotor();
+}
+
+
+void updateSerLCD() {
+  sprintf(stringLeft,"%4d",cmLeft);
+  sprintf(stringRight,"%4d",cmRight);
+
+  lcdSerial.write(254); 
+  // 7th position on first line
+  lcdSerial.write(134);
+  lcdSerial.write(stringLeft);
+
+  lcdSerial.write(254); 
+  // 7th position on second line
+  lcdSerial.write(198);
+  lcdSerial.write(stringRight);
+}
+
+void updateSerialMonitor() {
   Serial.print("L: [\t");
   Serial.print(cmLeft);
   Serial.print("]");
@@ -148,9 +191,11 @@ void loop() {
   Serial.print("\tR: [\t");
   Serial.print(cmRight);
   Serial.println("]");
-  
-  
-  // wait before next reading
-  //delay(500);
-  delay(25);
+}
+
+void updateMotor() {
+  int speed = throttle / 4;     // 0/1023 -> 0-255
+  analogWrite(en1Pin, speed);
+  digitalWrite(in1Pin, !reverse);
+  digitalWrite(in2Pin, reverse);  
 }
