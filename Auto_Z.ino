@@ -5,15 +5,12 @@
  *
  * Currently measures left/right distance (cm) and sets servo position 
  * and motor speed accordingly.  Motor and Arduino driven via external 4xAAA 
- * power.
- * Outputs measurements to serial/LCD*.
- * *LCD temporarily removed due to potential current limits
+ * power.  Wirelessly outputs measurements via BlueSMiRF serial.
  *
  * -----------------------------------------------------------------------------
  *
  */
 
-#include <SoftwareSerial.h>       // for SerLCD
 #include <Servo.h>                // for Servo
 // from https://github.com/jeroendoggen/Arduino-distance-sensor-library 
 #include <DistanceGP2Y0A21YK.h>   // for (L/R) GP2Y0A21YKs
@@ -25,11 +22,6 @@ const int analogInRight = A0;     // (driver's) right GP2Y0A21YK IR Measuring Se
 const int en1Pin = 11;            // L293D Pin 1 (speed)
 const int in1Pin = 10;            // L293D Pin 2 (value must be opposite of in2)
 const int in2Pin = 9;             // L293D Pin 7 (value must be opposite of in1)
-
-
-// serLCD on pin 11
-SoftwareSerial lcdSerial(10, 11); // RX, TX (RX w/b unused)
-char stringLeft[10], stringRight[10];
 
 
 // servo object and position (degrees)
@@ -46,13 +38,22 @@ DistanceGP2Y0A21YK DistLeft;
 DistanceGP2Y0A21YK DistRight;
 
 // distance measurements
-int cmLeft;
-int cmRight;
-const int evasionDistanceCmLeft = 12;     // take extreme action to correct course
-const int correctionDistanceCmLeft = 21;  // take mild action to correct course
-const int evasionDistanceCmRight = 15;    // note: left > right based on 
-const int correctionDistanceCmRight = 32; // measured avgs
-                                          // *10cm being GP2Y0A21YK's min. range
+const int samples = 4;                    // distance array size (accuracy)
+int cmLeft[samples];
+int cmRight[samples];
+int sampleIndex = 0;                      // current index
+int cmLeftTotal = 0;
+int cmLeftAverage = 0;                    // this value used directly
+int cmRightTotal = 0;
+int cmRightAverage = 0;                   // this value used directly
+const int evasionDistanceCmLeft = 13;      // take extreme action to correct course
+const int correctionDistanceCmLeft = 13;  // take mild action to correct course
+const int cornerDistanceCmLeft = 30;      // predict corner
+const int evasionDistanceCmRight = 16;    // note: left < right based on 
+const int correctionDistanceCmRight = 16; // measured avgs
+const int cornerDistanceCmRight = 40;     // predict corner
+const int maxDistanceCm = 80;             // GP2Y0A21YK's max/min. range
+const int minDistanceCm = 10;             // GP2Y0A21YK's max/min. range
 
 
 int throttle = 0;                         // current speed (analog 0-1023)
@@ -62,86 +63,135 @@ const int throttleMid = 1023 * (0.42);    // mid speed
 const int throttleMin = 1023 * (0.38);    // min speed
 
 
+boolean pause = true;                     // disables execution of loop code
+
+
 void setup() {
 
-  // initialize (USB) Serial Monitor at 9600 bps
-  Serial.begin(9600);
+  // initialize (USB/BlueSMiRF) Serial Monitor at 115200 bps
+  Serial.begin(115200);
   
+  initArrays();
   initServo();
   initIRSensors(); 
   initMotor();
-  //initSerLCD();
   
-  // wait 5 seconds so we're not driving off immediately
-  delay(5000);  
+  // made obsolete by pause functionality
+  //// wait 5 seconds so we're not driving off immediately
+  //delay(5000);  
 
 }
 
 void loop() {
   
-  // get and print distance measurements (cm)
-  cmLeft = DistLeft.getDistanceCentimeter();
-  cmRight = DistRight.getDistanceCentimeter();
+  // remove oldest value from samples totals
+  cmLeftTotal -= cmLeft[sampleIndex];
+  cmRightTotal -= cmRight[sampleIndex];
+  
+  // get distance measurements (cm)
+  cmLeft[sampleIndex] = DistLeft.getDistanceCentimeter();
+  cmRight[sampleIndex] = DistRight.getDistanceCentimeter();
+  
+  // for some reason, > range reading returns 37? quick fix: use prior value
+  // ignore values outside sensor range too - i.e. make decision based on
+  // last "good" info we had
+  int priorIndex = (sampleIndex == 0 ? samples - 1 : sampleIndex - 1);
+  if ((cmLeft[sampleIndex] == 37) || (cmLeft[sampleIndex] < minDistanceCm) ||
+      (cmLeft[sampleIndex] > maxDistanceCm))
+    cmLeft[sampleIndex] = cmLeft[priorIndex];
+  if ((cmRight[sampleIndex] == 37) || (cmRight[sampleIndex] < minDistanceCm) ||
+      (cmRight[sampleIndex] > maxDistanceCm))
+    cmRight[sampleIndex] = cmRight[priorIndex];
   
   
-  // default to straight
-  steeringPos = 90; 
-  // default throttle for straight
-  throttle = throttleMax; 
+  // add new values to totals
+  cmLeftTotal += cmLeft[sampleIndex];
+  cmRightTotal += cmRight[sampleIndex];
 
-  // favor handling closest wall
-  if (cmLeft < cmRight) {
-    if (cmLeft < evasionDistanceCmLeft) {
+  cmLeftAverage = cmLeftTotal / samples;
+  cmRightAverage = cmRightTotal / samples;
+  
+  // increment index, or wrap
+  sampleIndex++;
+  if (sampleIndex == samples) // since 0-based
+  {
+    sampleIndex = 0;
+    
+    // serial can't keep up, so only output once per array refresh
+    updateSerialMonitor();
+  }
+    
+  
+  // only execute if not "paused"
+  if (!pause) {
+    
+    // default to straight
+    steeringPos = 90; 
+    // default throttle for straight
+    throttle = throttleMax; 
+  
+    // evasive tactics first, and left is favored due to clockwise track
+    if (cmLeftAverage < evasionDistanceCmLeft) {
       // too close to left - aim right
       steeringPos = steeringCenter - steeringMaxRight;
       throttle = throttleMin; // slowest
-    } else if (cmLeft < correctionDistanceCmLeft) {
-      // less severe angle when further away
-      steeringPos = steeringCenter - (steeringMaxRight / 2);
-      throttle = throttleMid; // less slow
-    }
-    // otherwise, retain default straight
-  } 
-  else {
-    if (cmRight < evasionDistanceCmRight) {
+    } else if (cmRightAverage < evasionDistanceCmRight) {
       // too close to right - aim left
       steeringPos = steeringCenter + steeringMaxLeft;    
-      throttle = throttleMin; // slowest
-    } else if (cmRight < correctionDistanceCmRight) {
-      steeringPos = steeringCenter + (steeringMaxLeft / 2); 
+      throttle = throttleMin; // slowest      
+    } else if (cmLeftAverage > cornerDistanceCmLeft) {
+      // corner predicted on left
+      steeringPos = steeringCenter + (steeringMaxLeft * 0.6); 
+      throttle = throttleMid; // less slow
+    } else if (cmRightAverage > cornerDistanceCmRight) {
+      // corner predicted on right
+      steeringPos = steeringCenter - (steeringMaxRight * 0.6);
+      throttle = throttleMid; // less slow
+    } else if (cmLeftAverage < correctionDistanceCmLeft) {
+      // less severe angle when further away
+      steeringPos = steeringCenter - (steeringMaxRight * 0.5);
+      throttle = throttleMid; // less slow
+    } else if (cmRightAverage < correctionDistanceCmRight) {
+      steeringPos = steeringCenter + (steeringMaxLeft * 0.5); 
       throttle = throttleMid; // less slow
     }
     // otherwise, retain default straight
-  }
+
+  } // end pause
+  
   
   // apply trim to theoretical value before write
   steeringServo.write(steeringPos + steeringTrim);
   updateMotor();
   
-  //updateSerLCD();
-  updateSerialMonitor();  
-  
+    
   // wait before next reading
   delay(25); // min. ~15 for servo to keep up?
-  
 }
 
 
-void initSerLCD() {  
-  // initialize serLCD at 9600 bps
-  lcdSerial.begin(9600);
-  // wait 500ms for splash screen
-  delay(500);
-  
-  // move cursor to beginning of first line
-  lcdSerial.write(254);
-  lcdSerial.write(128);
-
-  // clear display
-  lcdSerial.write("L:              ");
-  lcdSerial.write("R:              ");  
+void serialEvent() {
+  switch(Serial.read()) {
+    case 's':
+      // straighten servo and stop motor/prevent sensor-based control
+      steeringPos = 90; 
+      throttle = 0;       
+      pause = true;
+      break;
+    case 'g':
+      pause = false;
+      break;
+  }  
 }
 
+
+void initArrays() {
+  for (int i = 0; i < samples; i++) {
+    cmLeft[sampleIndex] = 0;
+    cmRight[sampleIndex] = 0;
+  }
+}
+    
 void initServo() {
   // attach and center servo
   steeringServo.attach(steeringServoPin);
@@ -168,28 +218,11 @@ void initMotor() {
 }
 
 
-void updateSerLCD() {
-  sprintf(stringLeft,"%4d",cmLeft);
-  sprintf(stringRight,"%4d",cmRight);
-
-  lcdSerial.write(254); 
-  // 7th position on first line
-  lcdSerial.write(134);
-  lcdSerial.write(stringLeft);
-
-  lcdSerial.write(254); 
-  // 7th position on second line
-  lcdSerial.write(198);
-  lcdSerial.write(stringRight);
-}
-
 void updateSerialMonitor() {
-  Serial.print("L: [\t");
-  Serial.print(cmLeft);
-  Serial.print("]");
-
-  Serial.print("\tR: [\t");
-  Serial.print(cmRight);
+  Serial.print("[");
+  Serial.print(cmLeftAverage);
+  Serial.print("|");
+  Serial.print(cmRightAverage);
   Serial.println("]");
 }
 
