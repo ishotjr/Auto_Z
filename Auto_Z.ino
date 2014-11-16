@@ -57,6 +57,8 @@ const int minDistanceCm = 10;             // GP2Y0A21YK's max/min. range
 
 
 int throttle = 0;                         // current speed (analog 0-1023)
+int throttleTrim = 0;                     // adjustable offset from base throttle settings
+const int throttleTrimStep = 16;          // amount by which throttleTrim is inc/decremented
 boolean reverse = true;                   // motor is reversed
 const int throttleMax = 1023 * (0.45);    // top speed (1023 * % throttle)
 const int throttleMid = 1023 * (0.42);    // mid speed
@@ -64,6 +66,9 @@ const int throttleMin = 1023 * (0.38);    // min speed
 
 
 boolean pause = true;                     // disables execution of loop code
+
+// TODO: remove!
+int tick = 0;                             // temporary counter to help diagnose reset issue
 
 
 void setup() {
@@ -126,7 +131,7 @@ void loop() {
   if (!pause) {
     
     // default to straight
-    steeringPos = 90; 
+    steeringPos = steeringCenter; 
     // default throttle for straight
     throttle = throttleMax; 
   
@@ -172,15 +177,38 @@ void loop() {
 
 void serialEvent() {
   switch(Serial.read()) {
+    
     case 's':
       // straighten servo and stop motor/prevent sensor-based control
-      steeringPos = 90; 
+      steeringPos = steeringCenter; 
       throttle = 0;       
+      // reset throttleTrim
+      throttleTrim = 0;
       pause = true;
       break;
+      
     case 'g':
       pause = false;
       break;
+      
+    case '+':
+      throttleTrim += throttleTrimStep;
+      
+      // prevent overflow
+      if ((throttleMax + throttleTrim) > 1023) {
+        throttleTrim = 1023 - throttleMax;
+      }
+      break;
+      
+    case '-':
+      throttleTrim -= throttleTrimStep;
+      
+      // prevent overflow
+      if (throttleTrim < -throttleMin) {
+        throttleTrim = -throttleMin;
+      }
+      break;
+      
   }  
 }
 
@@ -219,15 +247,28 @@ void initMotor() {
 
 
 void updateSerialMonitor() {
+  
+  // TODO: remove!
+  Serial.print(tick++);
+  
   Serial.print("[");
   Serial.print(cmLeftAverage);
   Serial.print("|");
   Serial.print(cmRightAverage);
+  Serial.print("|");
+
+  // TODO: remove!
+  Serial.print(throttle);
+  Serial.print("+");
+  Serial.print(throttleTrim);
+  Serial.print("=");
+
+  Serial.print(throttle + throttleTrim);
   Serial.println("]");
 }
 
 void updateMotor() {
-  int speed = throttle / 4;     // 0/1023 -> 0-255
+  int speed = (throttle + throttleTrim) / 4;     // 0/1023 -> 0-255
   analogWrite(en1Pin, speed);
   digitalWrite(in1Pin, !reverse);
   digitalWrite(in2Pin, reverse);  
