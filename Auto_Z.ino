@@ -1,11 +1,12 @@
 /*
  * Auto_Z - A simple autonomous Mini-Z using Arduino.
+ * (Microview version!)
  *
  * -----------------------------------------------------------------------------
  *
  * Currently measures left/right distance (cm) and sets servo position 
  * and motor speed accordingly.  Motor and Arduino driven via external 4xAAA 
- * power.  Wirelessly outputs measurements via BlueSMiRF serial.
+ * power.  Outputs measurements via Microview.
  *
  * -----------------------------------------------------------------------------
  *
@@ -14,14 +15,16 @@
 #include <Servo.h>                // for Servo
 // from https://github.com/jeroendoggen/Arduino-distance-sensor-library 
 #include <DistanceGP2Y0A21YK.h>   // for (L/R) GP2Y0A21YKs
+#include <MicroView.h>
 
 // pin setup
-const int steeringServoPin = 2;   // servo data pin
-const int analogInLeft = A2;      // (driver's) left GP2Y0A21YK IR Measuring Sensor
+const int steeringServoPin = 3;   // servo data pin
+const int analogInLeft = A3;      // (driver's) left GP2Y0A21YK IR Measuring Sensor
 const int analogInRight = A0;     // (driver's) right GP2Y0A21YK IR Measuring Sensor
-const int en1Pin = 11;            // L293D Pin 1 (speed)
-const int in1Pin = 10;            // L293D Pin 2 (value must be opposite of in2)
-const int in2Pin = 9;             // L293D Pin 7 (value must be opposite of in1)
+const int en1Pin = 5;             // L293D Pin 1 (speed)
+const int in1Pin = 0;             // L293D Pin 2 (value must be opposite of in2)
+const int in2Pin = 1;             // L293D Pin 7 (value must be opposite of in1)
+const int throttleTrimPin = A2;   // potentiometer
 
 
 // servo object and position (degrees)
@@ -46,7 +49,7 @@ int cmLeftTotal = 0;
 int cmLeftAverage = 0;                    // this value used directly
 int cmRightTotal = 0;
 int cmRightAverage = 0;                   // this value used directly
-const int evasionDistanceCmLeft = 13;      // take extreme action to correct course
+const int evasionDistanceCmLeft = 13;     // take extreme action to correct course
 const int correctionDistanceCmLeft = 13;  // take mild action to correct course
 const int cornerDistanceCmLeft = 30;      // predict corner
 const int evasionDistanceCmRight = 16;    // note: left < right based on 
@@ -67,14 +70,17 @@ const int throttleMin = 1023 * (0.38);    // min speed
 
 boolean pause = true;                     // disables execution of loop code
 
-// TODO: remove!
-int tick = 0;                             // temporary counter to help diagnose reset issue
 
 
 void setup() {
 
+  uView.begin();
+  uView.clear(PAGE);
+  uView.setCursor(0,0);
+  uView.print("*PAUSED*");
+  uView.display();
   // initialize (USB/BlueSMiRF) Serial Monitor at 115200 bps
-  Serial.begin(115200);
+  //Serial.begin(115200);
   
   initArrays();
   initServo();
@@ -82,9 +88,11 @@ void setup() {
   initMotor();
   
   // made obsolete by pause functionality
-  //// wait 5 seconds so we're not driving off immediately
-  //delay(5000);  
-
+  // WHICH we no longer have due to removal of serial
+  // wait 5 seconds so we're not driving off immediately
+  delay(5000);  
+  pause = false;
+  uView.clear(PAGE);
 }
 
 void loop() {
@@ -123,7 +131,8 @@ void loop() {
     sampleIndex = 0;
     
     // serial can't keep up, so only output once per array refresh
-    updateSerialMonitor();
+    //updateSerialMonitor();
+    updateMicroview();
   }
     
   
@@ -134,6 +143,9 @@ void loop() {
     steeringPos = steeringCenter; 
     // default throttle for straight
     throttle = throttleMax; 
+    
+    // get throttleTrim from pot
+    throttleTrim  = analogRead(throttleTrimPin);
   
     // evasive tactics first, and left is favored due to clockwise track
     if (cmLeftAverage < evasionDistanceCmLeft) {
@@ -174,7 +186,7 @@ void loop() {
   delay(25); // min. ~15 for servo to keep up?
 }
 
-
+/*
 void serialEvent() {
   switch(Serial.read()) {
     
@@ -211,7 +223,7 @@ void serialEvent() {
       
   }  
 }
-
+*/
 
 void initArrays() {
   for (int i = 0; i < samples; i++) {
@@ -246,6 +258,46 @@ void initMotor() {
 }
 
 
+void updateMicroview() {
+  //uView.setFontType(1);
+  uView.setCursor(0,0);
+  uView.print("[");
+  uView.print(cmLeftAverage);
+  uView.print("|");
+  uView.print(cmRightAverage);
+  uView.print("]");
+  uView.setCursor(0,12);
+  uView.print(" ");
+  uView.print(throttle);
+  uView.setCursor(0,24);
+  uView.print("+");
+  uView.print(throttleTrim);
+  uView.setCursor(0,36);
+  uView.print("=");
+  uView.print(throttle + throttleTrim);
+
+  uView.display();
+/*  
+  // TODO: remove!
+  Serial.print(tick++);
+  
+  Serial.print("[");
+  Serial.print(cmLeftAverage);
+  Serial.print("|");
+  Serial.print(cmRightAverage);
+  Serial.print("|");
+
+  // TODO: remove!
+  Serial.print(throttle);
+  Serial.print("+");
+  Serial.print(throttleTrim);
+  Serial.print("=");
+
+  Serial.print(throttle + throttleTrim);
+  Serial.println("]");
+*/
+}
+/*
 void updateSerialMonitor() {
   
   // TODO: remove!
@@ -266,6 +318,7 @@ void updateSerialMonitor() {
   Serial.print(throttle + throttleTrim);
   Serial.println("]");
 }
+*/
 
 void updateMotor() {
   int speed = (throttle + throttleTrim) / 4;     // 0/1023 -> 0-255
